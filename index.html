@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <title>SecureQR Receiver</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+    .card {
+      width: min(440px, 100%);
+      background: #111827;
+      border: 1px solid #374151;
+      border-radius: 22px;
+      padding: 24px;
+      box-shadow: 0 24px 70px rgba(0,0,0,.35);
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.65rem;
+    }
+    .sub {
+      color: #9ca3af;
+      margin: 0 0 22px;
+      line-height: 1.45;
+    }
+    .status {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: #1f2937;
+      margin-bottom: 18px;
+      line-height: 1.4;
+    }
+    label {
+      display: block;
+      margin-bottom: 7px;
+      font-weight: 650;
+    }
+    input {
+      width: 100%;
+      padding: 13px 14px;
+      font-size: 1rem;
+      border-radius: 12px;
+      border: 1px solid #4b5563;
+      background: #0b1220;
+      color: #fff;
+      outline: none;
+    }
+    input:focus {
+      border-color: #93c5fd;
+    }
+    button {
+      width: 100%;
+      margin-top: 12px;
+      padding: 13px 14px;
+      border: 0;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 750;
+      cursor: pointer;
+      background: #f9fafb;
+      color: #111827;
+    }
+    button:disabled {
+      opacity: .55;
+      cursor: default;
+    }
+    .output {
+      display: none;
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 14px;
+      background: #052e16;
+      border: 1px solid #166534;
+    }
+    .output h2 {
+      font-size: 1rem;
+      margin: 0 0 8px;
+    }
+    .message {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.5;
+    }
+    .error {
+      display: none;
+      margin-top: 14px;
+      color: #fecaca;
+      line-height: 1.4;
+    }
+    .foot {
+      margin-top: 18px;
+      color: #6b7280;
+      font-size: .82rem;
+      line-height: 1.45;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>🔐 SecureQR</h1>
+    <p class="sub">Encrypted message receiver</p>
+
+    <div id="status" class="status">Reading encrypted QR payload…</div>
+
+    <div id="decryptPanel" hidden>
+      <label for="password">Shared password</label>
+      <input
+        id="password"
+        type="password"
+        autocomplete="current-password"
+        placeholder="Enter password"
+      />
+      <button id="decryptBtn">Decrypt message</button>
+    </div>
+
+    <div id="error" class="error"></div>
+
+    <section id="output" class="output">
+      <h2>Decrypted message</h2>
+      <div id="message" class="message"></div>
+    </section>
+
+    <div class="foot">
+      Decryption is performed locally in this browser using PBKDF2-HMAC-SHA256
+      and AES-256-GCM. The shared password is not included in the QR code.
+    </div>
+  </main>
+
+  <script>
+    const ITERATIONS = 600000;
+
+    const statusEl = document.getElementById("status");
+    const panelEl = document.getElementById("decryptPanel");
+    const passwordEl = document.getElementById("password");
+    const decryptBtn = document.getElementById("decryptBtn");
+    const errorEl = document.getElementById("error");
+    const outputEl = document.getElementById("output");
+    const messageEl = document.getElementById("message");
+
+    function b64urlToBytes(value) {
+      let s = value.replace(/-/g, "+").replace(/_/g, "/");
+      s += "=".repeat((4 - (s.length % 4)) % 4);
+      const binary = atob(s);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    }
+
+    function readPayload() {
+      const fragment = location.hash.startsWith("#")
+        ? location.hash.slice(1)
+        : location.hash;
+
+      if (!fragment) {
+        throw new Error("No SecureQR encrypted payload was found in this link.");
+      }
+
+      const p = new URLSearchParams(fragment);
+
+      const version = p.get("v");
+      const iterations = Number(p.get("i"));
+      const salt = p.get("s");
+      const nonce = p.get("n");
+      const ciphertext = p.get("c");
+
+      if (
+        version !== "1" ||
+        iterations !== ITERATIONS ||
+        !salt ||
+        !nonce ||
+        !ciphertext
+      ) {
+        throw new Error("This SecureQR link is incomplete or unsupported.");
+      }
+
+      return { iterations, salt, nonce, ciphertext };
+    }
+
+    async function deriveKey(password, salt, iterations) {
+      const material = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(password),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+
+      return crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt,
+          iterations,
+          hash: "SHA-256",
+        },
+        material,
+        {
+          name: "AES-GCM",
+          length: 256,
+        },
+        false,
+        ["decrypt"]
+      );
+    }
+
+    async function decryptMessage(payload, password) {
+      const salt = b64urlToBytes(payload.salt);
+      const nonce = b64urlToBytes(payload.nonce);
+      const ciphertext = b64urlToBytes(payload.ciphertext);
+
+      const key = await deriveKey(
+        password,
+        salt,
+        payload.iterations
+      );
+
+      const plaintextBuffer = await crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: nonce,
+        },
+        key,
+        ciphertext
+      );
+
+      return new TextDecoder().decode(plaintextBuffer);
+    }
+
+    let payload;
+
+    try {
+      if (!window.crypto || !crypto.subtle) {
+        throw new Error(
+          "Web Crypto is unavailable. Open this page using a modern HTTPS browser."
+        );
+      }
+
+      payload = readPayload();
+      statusEl.textContent =
+        "Encrypted SecureQR detected. Enter the pre-shared password.";
+      panelEl.hidden = false;
+
+      setTimeout(() => passwordEl.focus(), 200);
+    } catch (err) {
+      statusEl.textContent = "Unable to open SecureQR.";
+      errorEl.textContent = err.message || String(err);
+      errorEl.style.display = "block";
+    }
+
+    async function runDecrypt() {
+      errorEl.style.display = "none";
+      outputEl.style.display = "none";
+
+      const password = passwordEl.value;
+      if (!password) {
+        errorEl.textContent = "Enter the shared password.";
+        errorEl.style.display = "block";
+        return;
+      }
+
+      decryptBtn.disabled = true;
+      decryptBtn.textContent = "Decrypting…";
+
+      try {
+        const message = await decryptMessage(payload, password);
+        messageEl.textContent = message;
+        outputEl.style.display = "block";
+        statusEl.textContent = "✓ Decryption successful";
+      } catch (err) {
+        errorEl.textContent =
+          "Decryption failed. The password may be incorrect or the encrypted payload is invalid.";
+        errorEl.style.display = "block";
+        statusEl.textContent = "Unable to decrypt message";
+      } finally {
+        decryptBtn.disabled = false;
+        decryptBtn.textContent = "Decrypt message";
+      }
+    }
+
+    decryptBtn.addEventListener("click", runDecrypt);
+    passwordEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        runDecrypt();
+      }
+    });
+  </script>
+</body>
+</html>
